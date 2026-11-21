@@ -505,6 +505,24 @@ pub struct RemovedTile<W: LayoutElement> {
     is_floating: bool,
 }
 
+impl<W: LayoutElement> RemovedTile<W> {
+    pub fn window(&self) -> &W {
+        self.tile.window()
+    }
+
+    pub fn window_mut(&mut self) -> &mut W {
+        self.tile.window_mut()
+    }
+
+    pub fn update_window(&mut self) {
+        self.tile.update_window();
+    }
+
+    pub fn ipc_layout(&self) -> WindowLayout {
+        self.tile.ipc_layout_template()
+    }
+}
+
 /// Whether to activate a newly added window.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ActivateWindow {
@@ -1243,6 +1261,58 @@ impl<W: LayoutElement> Layout<W> {
         }
 
         None
+    }
+
+    /// Restore a removed tile on the active workspace, including when no outputs are connected.
+    pub fn restore_window(&mut self, removed: RemovedTile<W>) {
+        let RemovedTile {
+            mut tile,
+            width,
+            is_full_width,
+            is_floating,
+        } = removed;
+        // Fullscreen/maximized windows can have a floating restore target even though they were
+        // removed from the scrolling layout.
+        let is_floating = is_floating || tile.restore_to_floating;
+        tile.stop_move_animations();
+        tile.ensure_alpha_animates_to_1();
+        tile.interactive_move_offset = Point::from((0., 0.));
+
+        match &mut self.monitor_set {
+            MonitorSet::Normal {
+                monitors,
+                active_monitor_idx,
+                ..
+            } => {
+                monitors[*active_monitor_idx].add_tile(
+                    tile,
+                    MonitorAddWindowTarget::Auto,
+                    ActivateWindow::Yes,
+                    true,
+                    width,
+                    is_full_width,
+                    is_floating,
+                    None,
+                );
+            }
+            MonitorSet::NoOutputs { workspaces } => {
+                if workspaces.is_empty() {
+                    workspaces.push(Workspace::new_no_outputs(
+                        self.clock.clone(),
+                        self.options.clone(),
+                    ));
+                }
+                workspaces[0].add_tile(
+                    tile,
+                    WorkspaceAddWindowTarget::Auto,
+                    ActivateWindow::Yes,
+                    width,
+                    is_full_width,
+                    is_floating,
+                    None,
+                );
+            }
+        }
     }
 
     pub fn descendants_added(&mut self, id: &W::Id) -> bool {

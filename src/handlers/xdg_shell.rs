@@ -1,8 +1,10 @@
 use std::cell::Cell;
+use std::sync::Mutex;
 
 use calloop::Interest;
 use niri_config::PresetSize;
 use smithay::backend::input::InputTime;
+use smithay::backend::renderer::element::PrimaryScanoutOutput;
 use smithay::desktop::{
     find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, utils, LayerSurface,
     PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, PopupUngrabStrategy, Window,
@@ -39,12 +41,13 @@ use tracing::field::Empty;
 use crate::input::move_grab::MoveGrab;
 use crate::input::resize_grab::ResizeGrab;
 use crate::input::{AnyStartData, DOUBLE_CLICK_TIME};
-use crate::layout::ActivateWindow;
+use crate::layout::{ActivateWindow, LayoutElement as _};
 use crate::niri::{CastTarget, PopupGrabState, State};
 use crate::utils::transaction::Transaction;
 use crate::utils::{
     get_monotonic_time, output_matches_name, send_scale_transform, update_tiled_state, ResizeEdge,
 };
+use crate::window::mapped::MappedId;
 use crate::window::{InitialConfigureState, ResolvedWindowRules, Unmapped, WindowRef};
 
 impl XdgShellHandler for State {
@@ -471,6 +474,9 @@ impl XdgShellHandler for State {
     }
 
     fn maximize_request(&mut self, toplevel: ToplevelSurface) {
+        if self.acknowledge_minimized_sizing_request(&toplevel) {
+            return;
+        }
         if let Some((mapped, _)) = self
             .niri
             .layout
@@ -553,6 +559,9 @@ impl XdgShellHandler for State {
     }
 
     fn unmaximize_request(&mut self, toplevel: ToplevelSurface) {
+        if self.acknowledge_minimized_sizing_request(&toplevel) {
+            return;
+        }
         if let Some((mapped, _)) = self
             .niri
             .layout
@@ -676,6 +685,9 @@ impl XdgShellHandler for State {
         toplevel: ToplevelSurface,
         wl_output: Option<wl_output::WlOutput>,
     ) {
+        if self.acknowledge_minimized_sizing_request(&toplevel) {
+            return;
+        }
         let requested_output = wl_output.and_then(|o| self.niri.output_from_resource(&o));
 
         if let Some((mapped, current_output)) = self
@@ -764,6 +776,9 @@ impl XdgShellHandler for State {
     }
 
     fn unfullscreen_request(&mut self, toplevel: ToplevelSurface) {
+        if self.acknowledge_minimized_sizing_request(&toplevel) {
+            return;
+        }
         if let Some((mapped, _)) = self
             .niri
             .layout
@@ -881,7 +896,29 @@ impl XdgShellHandler for State {
         }
     }
 
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        if let Some((mapped, _)) = self
+            .niri
+            .layout
+            .find_window_and_output(surface.wl_surface())
+        {
+            let id = mapped.id();
+            self.minimize_window(Some(id));
+        }
+    }
+
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        if let Some(idx) =
+            self.niri.minimized_windows.iter().position(|removed| {
+                removed.window().toplevel().wl_surface() == surface.wl_surface()
+            })
+        {
+            self.niri.minimized_windows.remove(idx);
+            if surface.wl_surface().is_alive() {
+                self.add_default_dmabuf_pre_commit_hook(surface.wl_surface());
+            }
+            return;
+        }
         if self
             .niri
             .unmapped_windows
@@ -1088,6 +1125,100 @@ impl XdgForeignHandler for State {
 }
 
 impl State {
+    /// Sizing requests may be ignored, but xdg-shell still requires a configure in response.
+    /// Keep minimized windows hidden and retain their pre-minimize sizing mode until restored.
+    fn acknowledge_minimized_sizing_request(&mut self, toplevel: &ToplevelSurface) -> bool {
+        let Some(removed) = self
+            .niri
+            .minimized_windows
+            .iter_mut()
+            .find(|r| r.window().toplevel().wl_surface() == toplevel.wl_surface())
+        else {
+            return false;
+        };
+        removed.window_mut().set_needs_configure();
+        true
+    }
+
+    /// Remove a window from the layout without destroying its mapped state or ID.
+    pub fn minimize_window(&mut self, id: Option<MappedId>) {
+        let window = if let Some(id) = id {
+            self.niri.find_window_by_id(id)
+        } else {
+            self.niri.layout.focus().map(|mapped| mapped.window.clone())
+        };
+        let Some(window) = window else {
+            return;
+        };
+        let surface = window.toplevel().expect("no X11 support").wl_surface();
+        let Some((mapped, output)) = self.niri.layout.find_window_and_output(surface) else {
+            return;
+        };
+        let id = mapped.id();
+        let output = output.cloned();
+        let was_active = self.niri.layout.focus().is_some_and(|win| win.id() == id);
+
+        self.niri
+            .stop_casts_for_target(CastTarget::Window { id: id.get() });
+        self.store_unmap_snapshot(&window, output.as_ref());
+        let transaction = Transaction::new();
+        let blocker = transaction.blocker();
+        self.backend.with_primary_renderer(|renderer| {
+            self.niri
+                .layout
+                .start_close_animation_for_window(renderer, &window, blocker);
+        });
+
+        self.niri.window_mru_ui.remove_window(id);
+        if let Some(mut removed) = self.niri.layout.remove_window(&window, transaction.clone()) {
+            let mapped = removed.window_mut();
+            // The window will no longer be visited by update_primary_scanout_output(). Clear its
+            // old visibility information, including popups, so it cannot keep inhibiting idle.
+            mapped.window.with_surfaces(|_, states| {
+                if let Some(primary) = states.data_map.get::<Mutex<PrimaryScanoutOutput>>() {
+                    *primary.lock().unwrap() = PrimaryScanoutOutput::default();
+                }
+            });
+            // Removing an interactively moved tile does not go through Workspace::remove_tile().
+            if let Some(output) = &output {
+                mapped.output_leave(output);
+            }
+            mapped.set_activated(false);
+            mapped.set_active_in_column(false);
+            mapped.set_interactive_resize(None);
+            self.niri.minimized_windows.push(removed);
+        }
+        if !transaction.is_last() {
+            transaction.register_deadline_timer(&self.niri.event_loop);
+        }
+        if was_active {
+            self.maybe_warp_cursor_to_focus();
+        }
+        self.niri.queue_redraw_all();
+    }
+
+    /// Restore by ID, or restore the most recently minimized window when no ID is given.
+    pub fn restore_window(&mut self, id: Option<MappedId>) {
+        let idx = match id {
+            Some(id) => self
+                .niri
+                .minimized_windows
+                .iter()
+                .position(|r| r.window().id() == id),
+            None => self.niri.minimized_windows.len().checked_sub(1),
+        };
+        let Some(idx) = idx else {
+            return;
+        };
+        let removed = self.niri.minimized_windows.remove(idx);
+        let window = removed.window().window.clone();
+        self.niri.layout.restore_window(removed);
+        self.niri.layout.start_open_animation_for_window(&window);
+        self.niri.layer_shell_on_demand_focus = None;
+        self.maybe_warp_cursor_to_focus();
+        self.niri.queue_redraw_all();
+    }
+
     pub fn send_initial_configure(&mut self, toplevel: &ToplevelSurface) {
         let _span = tracy_client::span!("State::send_initial_configure");
 
@@ -1467,7 +1598,17 @@ impl State {
         let config = self.niri.config.borrow();
         let window_rules = &config.window_rules;
 
-        if let Some(unmapped) = self.niri.unmapped_windows.get_mut(toplevel.wl_surface()) {
+        if let Some(removed) = self
+            .niri
+            .minimized_windows
+            .iter_mut()
+            .find(|r| r.window().toplevel().wl_surface() == toplevel.wl_surface())
+        {
+            removed
+                .window_mut()
+                .recompute_window_rules(window_rules, self.niri.is_at_startup);
+            removed.update_window();
+        } else if let Some(unmapped) = self.niri.unmapped_windows.get_mut(toplevel.wl_surface()) {
             let new_rules = ResolvedWindowRules::compute(
                 window_rules,
                 WindowRef::Unmapped(unmapped),
@@ -1542,7 +1683,19 @@ pub fn add_mapped_toplevel_pre_commit_hook(toplevel: &ToplevelSurface) -> HookId
         let span =
             trace_span!("toplevel pre-commit", surface = %surface.id(), serial = Empty).entered();
 
-        let Some((mapped, output)) = state.niri.layout.find_window_and_output_mut(surface) else {
+        let Some((mapped, output)) = state
+            .niri
+            .layout
+            .find_window_and_output_mut(surface)
+            .or_else(|| {
+                state
+                    .niri
+                    .minimized_windows
+                    .iter_mut()
+                    .find(|r| r.window().toplevel().wl_surface() == surface)
+                    .map(|r| (r.window_mut(), None))
+            })
+        else {
             error!("pre-commit hook for mapped surfaces must be removed upon unmapping");
             return;
         };

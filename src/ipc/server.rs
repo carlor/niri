@@ -72,6 +72,17 @@ struct EventStreamSender {
 }
 
 impl IpcServer {
+    #[cfg(test)]
+    pub(crate) fn windows(&self) -> Vec<niri_ipc::Window> {
+        self.event_stream_state
+            .borrow()
+            .windows
+            .windows
+            .values()
+            .cloned()
+            .collect()
+    }
+
     pub fn start(
         event_loop: &LoopHandle<'static, State>,
         wayland_socket_name: Option<&OsStr>,
@@ -288,6 +299,17 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
             let state = ctx.event_stream_state.borrow();
             let windows = state.windows.windows.values().cloned().collect();
             Response::Windows(windows)
+        }
+        Request::HiddenWindows => {
+            let state = ctx.event_stream_state.borrow();
+            let windows = state
+                .windows
+                .windows
+                .values()
+                .filter(|window| window.is_minimized)
+                .cloned()
+                .collect();
+            Response::HiddenWindows(windows)
         }
         Request::Layers => {
             let (tx, rx) = async_channel::bounded(1);
@@ -529,6 +551,7 @@ fn make_ipc_window(
         workspace_id: workspace_id.map(|id| id.get()),
         is_focused: mapped.is_focused(),
         is_floating: mapped.is_floating(),
+        is_minimized: false,
         is_urgent: mapped.is_urgent(),
         layout,
         focus_timestamp: mapped.get_focus_timestamp().map(Timestamp::from),
@@ -722,8 +745,9 @@ impl State {
             };
 
             let workspace_id = ws_id.map(|id| id.get());
-            let mut changed =
-                ipc_win.workspace_id != workspace_id || ipc_win.is_floating != mapped.is_floating();
+            let mut changed = ipc_win.workspace_id != workspace_id
+                || ipc_win.is_floating != mapped.is_floating()
+                || ipc_win.is_minimized;
 
             changed |= with_toplevel_role(mapped.toplevel(), |role| {
                 ipc_win.title != role.title || ipc_win.app_id != role.app_id
@@ -756,6 +780,19 @@ impl State {
                 events.push(Event::WindowUrgencyChanged { id, urgent })
             }
         });
+
+        for removed in &self.niri.minimized_windows {
+            let mapped = removed.window();
+            let id = mapped.id().get();
+            seen.insert(id);
+            let layout = removed.ipc_layout();
+            let mut window = make_ipc_window(mapped, None, layout);
+            window.is_minimized = true;
+            window.is_focused = false;
+            if state.windows.get(&id) != Some(&window) {
+                events.push(Event::WindowOpenedOrChanged { window });
+            }
+        }
 
         // It might make sense to push layout changes after closed windows (since windows about to
         // be closed will occupy the same column/tile positions as the window that moved into this
@@ -1028,5 +1065,100 @@ impl State {
         let event = Event::ScreenshotCaptured { path };
         state.apply(event.clone());
         server.send_event(event);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use calloop::EventLoop;
+
+    use super::*;
+
+    fn window(id: u64, is_minimized: bool) -> niri_ipc::Window {
+        niri_ipc::Window {
+            id,
+            title: Some(format!("Window {id}")),
+            app_id: Some("test-app".into()),
+            pid: None,
+            workspace_id: if is_minimized { None } else { Some(1) },
+            is_focused: false,
+            is_floating: false,
+            is_minimized,
+            is_urgent: false,
+            layout: WindowLayout {
+                pos_in_scrolling_layout: None,
+                tile_size: (300., 200.),
+                window_size: (300, 200),
+                tile_pos_in_workspace_view: None,
+                window_offset_in_tile: (0., 0.),
+            },
+            focus_timestamp: None,
+        }
+    }
+
+    #[test]
+    fn hidden_windows_is_filtered_normal_window_data() {
+        let event_loop = EventLoop::<'static, State>::try_new().unwrap();
+        let (_, scheduler) = calloop::futures::executor().unwrap();
+        let ctx = ClientCtx {
+            event_loop: event_loop.handle(),
+            scheduler,
+            ipc_outputs: Default::default(),
+            event_streams: Default::default(),
+            event_stream_state: Default::default(),
+        };
+        // These queries are answered immediately from the event stream state, without scheduling
+        // work on the compositor event loop.
+        let query = |request| process(&ctx, request).now_or_never().unwrap().unwrap();
+        let Response::HiddenWindows(windows) = query(Request::HiddenWindows) else {
+            panic!("expected a hidden window list");
+        };
+        assert!(windows.is_empty());
+
+        let visible = window(1, false);
+        let hidden = window(2, true);
+        ctx.event_stream_state
+            .borrow_mut()
+            .windows
+            .windows
+            .extend([(visible.id, visible.clone()), (hidden.id, hidden.clone())]);
+
+        let Response::Windows(mut windows) = query(Request::Windows) else {
+            panic!("expected a normal window list");
+        };
+        windows.sort_unstable_by_key(|window| window.id);
+        assert_eq!(windows, [visible, hidden.clone()]);
+        let json = serde_json::to_value(&windows).unwrap();
+        assert_eq!(json[0]["is_minimized"], false);
+        assert_eq!(json[1]["is_minimized"], true);
+
+        let Response::HiddenWindows(windows) = query(Request::HiddenWindows) else {
+            panic!("expected a hidden window list");
+        };
+        assert_eq!(windows, [hidden]);
+        let encoded = serde_json::to_string(&Request::HiddenWindows).unwrap();
+        assert_eq!(encoded, r#""HiddenWindows""#);
+        assert!(matches!(
+            serde_json::from_str::<Request>(&encoded).unwrap(),
+            Request::HiddenWindows
+        ));
+
+        // A restored or closed window must disappear from the filtered query.
+        ctx.event_stream_state
+            .borrow_mut()
+            .windows
+            .windows
+            .get_mut(&2)
+            .unwrap()
+            .is_minimized = false;
+        let Response::HiddenWindows(windows) = query(Request::HiddenWindows) else {
+            panic!("expected a hidden window list");
+        };
+        assert!(windows.is_empty());
+        ctx.event_stream_state.borrow_mut().windows.windows.clear();
+        let Response::HiddenWindows(windows) = query(Request::HiddenWindows) else {
+            panic!("expected a hidden window list");
+        };
+        assert!(windows.is_empty());
     }
 }

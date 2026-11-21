@@ -71,8 +71,13 @@ pub enum Request {
     Outputs,
     /// Request information about workspaces.
     Workspaces,
-    /// Request information about open windows.
+    /// Request information about all open windows, including minimized windows.
     Windows,
+    /// Request information about minimized (hidden) windows only.
+    ///
+    /// These are the same window records returned by [`Request::Windows`], filtered by
+    /// [`Window::is_minimized`].
+    HiddenWindows,
     /// Request information about layer-shell surfaces.
     Layers,
     /// Request information about the configured keyboard layouts.
@@ -145,8 +150,10 @@ pub enum Response {
     Outputs(HashMap<String, Output>),
     /// Information about workspaces.
     Workspaces(Vec<Workspace>),
-    /// Information about open windows.
+    /// Information about all open windows, including minimized windows.
     Windows(Vec<Window>),
+    /// Information about minimized (hidden) windows only.
+    HiddenWindows(Vec<Window>),
     /// Information about layer-shell surfaces.
     Layers(Vec<LayerSurface>),
     /// Information about the keyboard layout.
@@ -303,6 +310,18 @@ pub enum Action {
         /// Id of the window to close.
         ///
         /// If `None`, uses the focused window.
+        #[cfg_attr(feature = "clap", arg(long))]
+        id: Option<u64>,
+    },
+    /// Hide a window and retain it for later restoration.
+    MinimizeWindow {
+        /// Id of the window to minimize. If omitted, uses the focused window.
+        #[cfg_attr(feature = "clap", arg(long))]
+        id: Option<u64>,
+    },
+    /// Restore a minimized window on the active workspace and focus it.
+    RestoreWindow {
+        /// Id of the window to restore. If omitted, restores the most recently minimized window.
         #[cfg_attr(feature = "clap", arg(long))]
         id: Option<u64>,
     },
@@ -1603,7 +1622,7 @@ pub enum MaxBpc {
 }
 
 /// Toplevel window.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct Window {
     /// Unique id of this window.
@@ -1633,6 +1652,11 @@ pub struct Window {
     ///
     /// If the window isn't floating then it is in the tiling layout.
     pub is_floating: bool,
+    /// Whether this window is minimized (hidden and outside the layout).
+    ///
+    /// Minimized windows have no workspace and cannot be focused until restored.
+    #[serde(default)]
+    pub is_minimized: bool,
     /// Whether this window requests your attention.
     pub is_urgent: bool,
     /// Position- and size-related properties of the window.

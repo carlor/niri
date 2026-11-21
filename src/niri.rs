@@ -158,6 +158,7 @@ use crate::layout::tile::TileRenderElement;
 use crate::layout::workspace::{Workspace, WorkspaceId};
 use crate::layout::{
     HitType, Layout, LayoutElement as _, LayoutElementRenderElement, MonitorRenderElement,
+    RemovedTile,
 };
 use crate::niri_render_elements;
 use crate::protocols::ext_workspace::{self, ExtWorkspaceManagerState};
@@ -267,6 +268,9 @@ pub struct Niri {
 
     // Windows which don't have a buffer attached yet.
     pub unmapped_windows: HashMap<WlSurface, Unmapped>,
+
+    /// Minimized windows, ordered from least to most recently minimized.
+    pub minimized_windows: Vec<RemovedTile<Mapped>>,
 
     /// Layer surfaces which don't have a buffer attached yet.
     pub unmapped_layer_surfaces: HashSet<WlSurface>,
@@ -2908,6 +2912,7 @@ impl Niri {
             sorted_outputs: Vec::default(),
             output_state: HashMap::new(),
             unmapped_windows: HashMap::new(),
+            minimized_windows: Vec::new(),
             unmapped_layer_surfaces: HashSet::new(),
             mapped_layer_surfaces: HashMap::new(),
             root_surface: HashMap::new(),
@@ -4553,6 +4558,16 @@ impl Niri {
         };
 
         self.layout.refresh(layout_is_active);
+
+        for removed in &mut self.minimized_windows {
+            let mapped = removed.window_mut();
+            mapped.set_is_focused(false);
+            mapped.set_activated(false);
+            mapped.set_active_in_column(false);
+            mapped.set_interactive_resize(None);
+            mapped.send_pending_configure();
+            mapped.refresh();
+        }
     }
 
     pub fn refresh_idle_inhibit(&mut self) {
@@ -4576,6 +4591,12 @@ impl Niri {
         self.layout.with_windows_mut(|mapped, _output| {
             mapped.update_tiled_state(config.prefer_no_csd);
         });
+        for removed in &mut self.minimized_windows {
+            removed
+                .window_mut()
+                .update_tiled_state(config.prefer_no_csd);
+            removed.window_mut().update_config(config.blur);
+        }
         drop(config);
     }
 
@@ -4587,6 +4608,14 @@ impl Niri {
 
         let mut windows = vec![];
         let mut outputs = HashSet::new();
+        for removed in &mut self.minimized_windows {
+            let mapped = removed.window_mut();
+            if mapped.recompute_window_rules_if_needed(window_rules, self.is_at_startup) {
+                mapped.update_tiled_state(config.prefer_no_csd);
+                mapped.send_pending_configure();
+                removed.update_window();
+            }
+        }
         self.layout.with_windows_mut(|mapped, output| {
             if mapped.recompute_window_rules_if_needed(window_rules, self.is_at_startup) {
                 windows.push(mapped.window.clone());
@@ -5861,6 +5890,15 @@ impl Niri {
                 |_, _| None,
             );
         });
+
+        for removed in &mut self.minimized_windows {
+            removed.window_mut().send_frame(
+                output,
+                frame_callback_time,
+                FRAME_CALLBACK_THROTTLE,
+                |_, _| None,
+            );
+        }
 
         for (output, state) in self.output_state.iter() {
             for surface in layer_map_for_output(output).layers() {
@@ -7647,6 +7685,12 @@ impl Niri {
             }
 
             let mut windows = vec![];
+            for removed in &mut self.minimized_windows {
+                removed
+                    .window_mut()
+                    .recompute_window_rules(window_rules, self.is_at_startup);
+                removed.update_window();
+            }
             self.layout.with_windows_mut(|mapped, _| {
                 if mapped.recompute_window_rules(window_rules, self.is_at_startup) {
                     windows.push(mapped.window.clone());

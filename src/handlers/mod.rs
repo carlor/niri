@@ -534,6 +534,15 @@ impl ForeignToplevelHandler for State {
     }
 
     fn activate(&mut self, wl_surface: WlSurface) {
+        let id = self
+            .niri
+            .minimized_windows
+            .iter()
+            .find(|r| r.window().toplevel().wl_surface() == &wl_surface)
+            .map(|r| r.window().id());
+        if let Some(id) = id {
+            self.restore_window(Some(id));
+        }
         if let Some((mapped, _)) = self.niri.layout.find_window_and_output(&wl_surface) {
             let window = mapped.window.clone();
             self.niri.layout.activate_window(&window);
@@ -545,6 +554,32 @@ impl ForeignToplevelHandler for State {
     fn close(&mut self, wl_surface: WlSurface) {
         if let Some((mapped, _)) = self.niri.layout.find_window_and_output(&wl_surface) {
             mapped.toplevel().send_close();
+        } else if let Some(removed) = self
+            .niri
+            .minimized_windows
+            .iter()
+            .find(|r| r.window().toplevel().wl_surface() == &wl_surface)
+        {
+            removed.window().toplevel().send_close();
+        }
+    }
+
+    fn set_minimized(&mut self, wl_surface: WlSurface) {
+        if let Some((mapped, _)) = self.niri.layout.find_window_and_output(&wl_surface) {
+            let id = mapped.id();
+            self.minimize_window(Some(id));
+        }
+    }
+
+    fn unset_minimized(&mut self, wl_surface: WlSurface) {
+        let id = self
+            .niri
+            .minimized_windows
+            .iter()
+            .find(|r| r.window().toplevel().wl_surface() == &wl_surface)
+            .map(|r| r.window().id());
+        if let Some(id) = id {
+            self.restore_window(Some(id));
         }
     }
 
@@ -798,6 +833,25 @@ impl XdgActivationHandler for State {
         surface: WlSurface,
     ) {
         if token_data.timestamp.elapsed() < XDG_ACTIVATION_TOKEN_TIMEOUT {
+            if let Some(removed) = self
+                .niri
+                .minimized_windows
+                .iter_mut()
+                .find(|r| r.window().toplevel().wl_surface() == &surface)
+            {
+                let mapped = removed.window_mut();
+                let id = mapped.id();
+                match mapped.rules().on_xdg_activate {
+                    Some(niri_config::OnXdgActivate::Ignore) => {}
+                    Some(niri_config::OnXdgActivate::SetUrgent) => mapped.set_urgent(true),
+                    None if token_data.user_data.get::<UrgentOnlyMarker>().is_some() => {
+                        mapped.set_urgent(true)
+                    }
+                    _ => self.restore_window(Some(id)),
+                }
+                self.niri.activation_state.remove_token(&token);
+                return;
+            }
             if let Some((mapped, _)) = self.niri.layout.find_window_and_output_mut(&surface) {
                 let window = mapped.window.clone();
                 match mapped.rules().on_xdg_activate {

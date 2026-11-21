@@ -43,6 +43,7 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
         },
         Msg::Workspaces => Request::Workspaces,
         Msg::Windows => Request::Windows,
+        Msg::HiddenWindows => Request::HiddenWindows,
         Msg::Layers => Request::Layers,
         Msg::KeyboardLayouts => Request::KeyboardLayouts,
         Msg::EventStream => Request::EventStream,
@@ -197,9 +198,11 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
                 println!("No window is focused.");
             }
         }
-        Msg::Windows => {
-            let Response::Windows(mut windows) = response else {
-                bail!("unexpected response: expected Windows, got {response:?}");
+        Msg::Windows | Msg::HiddenWindows => {
+            let mut windows = match (&msg, response) {
+                (Msg::Windows, Response::Windows(windows))
+                | (Msg::HiddenWindows, Response::HiddenWindows(windows)) => windows,
+                (_, response) => bail!("unexpected window list response: {response:?}"),
             };
 
             if json {
@@ -709,7 +712,12 @@ fn print_output(output: Output) -> anyhow::Result<()> {
 fn print_window(window: &Window) {
     let focused = if window.is_focused { " (focused)" } else { "" };
     let urgent = if window.is_urgent { " (urgent)" } else { "" };
-    println!("Window ID {}:{focused}{urgent}", window.id);
+    let minimized = if window.is_minimized {
+        " (minimized)"
+    } else {
+        ""
+    };
+    println!("Window ID {}:{focused}{urgent}{minimized}", window.id);
 
     if let Some(title) = &window.title {
         println!("  Title: \"{title}\"");
@@ -726,6 +734,10 @@ fn print_window(window: &Window) {
     println!(
         "  Is floating: {}",
         if window.is_floating { "yes" } else { "no" }
+    );
+    println!(
+        "  Is minimized: {}",
+        if window.is_minimized { "yes" } else { "no" }
     );
 
     if let Some(pid) = window.pid {

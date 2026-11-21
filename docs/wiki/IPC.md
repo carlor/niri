@@ -8,6 +8,56 @@ For example, `niri msg --json outputs`.
 > If you're getting parsing errors from `niri msg` after upgrading niri, make sure that you've restarted niri itself.
 > You might be trying to run a newer `niri msg` against an older `niri` compositor.
 
+### Minimizing Windows
+
+Hide the focused window without closing it:
+
+```sh
+niri msg action minimize-window
+```
+
+Use `--id ID` to minimize a particular window. Minimized windows retain their IDs and appear in
+`niri msg windows` (or `niri msg --json windows`) with `is_minimized: true`, no workspace, and no focus.
+They are absent from the layout, overview, and built-in window switcher.
+
+List only hidden windows:
+
+```sh
+niri msg hidden-windows
+niri msg --json hidden-windows
+```
+
+This returns the same window records as `windows`, filtered by `is_minimized`.
+The normal `windows` query and window events continue to include this boolean for every window,
+whether visible or hidden. At the socket level, use `"HiddenWindows"` to receive a
+`HiddenWindows` response containing the filtered window list.
+The human-readable lists show an explicit `Is minimized: yes/no` line; JSON uses `is_minimized`.
+
+Restore the most recently minimized window, or a particular window by ID:
+
+```sh
+niri msg action restore-window
+niri msg action restore-window --id 42
+```
+
+Restored windows open on the active workspace and receive focus. Their floating/fullscreen state and
+column width are retained, but their original column position is not. Focusing a minimized window
+by ID also restores it. Empty restore lists and unknown IDs are harmless no-ops.
+The minimized list lasts only for the current compositor session; closed windows are removed from it.
+
+Both actions can be bound in the config:
+
+```kdl
+binds {
+    Mod+M { minimize-window; }
+    Mod+Shift+M { restore-window; }
+}
+```
+
+Application minimize requests and the wlr foreign-toplevel minimize/restore requests use the same
+list. Minimizing and restoring produce `WindowOpenedOrChanged` events, not close/open events with
+new IDs.
+
 ### Event Stream
 
 <sup>Since: 0.1.9</sup>

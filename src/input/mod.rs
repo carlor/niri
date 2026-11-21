@@ -1100,8 +1100,18 @@ impl State {
                 let id = MappedId::specific(id);
                 if let Some((mapped, _)) = self.niri.find_mapped_output_by_id(id) {
                     mapped.toplevel().send_close();
+                } else if let Some(removed) = self
+                    .niri
+                    .minimized_windows
+                    .iter()
+                    .find(|r| r.window().id() == id)
+                {
+                    removed.window().toplevel().send_close();
                 }
             }
+            Action::MinimizeWindow => self.minimize_window(None),
+            Action::MinimizeWindowById(id) => self.minimize_window(Some(MappedId::specific(id))),
+            Action::RestoreWindow(id) => self.restore_window(id.map(MappedId::specific)),
             Action::FullscreenWindow => {
                 let focus = self.niri.layout.focus().map(|m| m.window.clone());
                 if let Some(window) = focus {
@@ -1232,6 +1242,7 @@ impl State {
             }
             Action::FocusWindow(id) => {
                 let id = MappedId::specific(id);
+                self.restore_window(Some(id));
                 if let Some(window) = self.niri.find_window_by_id(id) {
                     self.focus_window(&window);
                 }

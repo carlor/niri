@@ -68,8 +68,10 @@ pub enum Msg {
     Outputs,
     /// List workspaces.
     Workspaces,
-    /// List open windows.
+    /// List all open windows, including minimized windows.
     Windows,
+    /// List minimized (hidden) windows.
+    HiddenWindows,
     /// List open layer-shell surfaces.
     Layers,
     /// Get the configured keyboard layouts.
@@ -137,6 +139,28 @@ impl TryFrom<CompletionShell> for Shell {
             CompletionShell::PowerShell => Ok(Shell::PowerShell),
             CompletionShell::Zsh => Ok(Shell::Zsh),
             CompletionShell::Nushell => Err("Nushell should be handled separately"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hidden_windows_command() {
+        for args in [
+            vec!["niri", "msg", "hidden-windows"],
+            vec!["niri", "msg", "--json", "hidden-windows"],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(matches!(
+                cli.subcommand,
+                Some(Sub::Msg {
+                    msg: Msg::HiddenWindows,
+                    ..
+                })
+            ));
         }
     }
 }

@@ -75,6 +75,42 @@ impl CompositorHandler for State {
             return;
         }
 
+        // Minimized windows still have buffers and may keep committing. Never add them back to
+        // the layout implicitly. A real client unmap, however, restarts the xdg-shell lifecycle.
+        if let Some(idx) = self
+            .niri
+            .minimized_windows
+            .iter()
+            .position(|r| r.window().toplevel().wl_surface() == &root_surface)
+        {
+            let removed = &mut self.niri.minimized_windows[idx];
+            removed.window().window.on_commit();
+            if surface == &root_surface && !is_mapped(surface) {
+                let window = removed.window().window.clone();
+                // Drop the mapped pre-commit hook before installing the default one.
+                self.niri.minimized_windows.remove(idx);
+                self.add_default_dmabuf_pre_commit_hook(surface);
+                self.niri
+                    .unmapped_windows
+                    .insert(surface.clone(), Unmapped::new(window));
+            } else {
+                let serial = with_states(&root_surface, |states| {
+                    states
+                        .cached_state
+                        .get::<ToplevelCachedState>()
+                        .current()
+                        .last_acked
+                        .as_ref()
+                        .map(|c| c.serial)
+                });
+                if let Some(serial) = serial {
+                    removed.window_mut().on_commit(serial);
+                }
+                removed.update_window();
+            }
+            return;
+        }
+
         if surface == &root_surface {
             // This is a root surface commit. It might have mapped a previously-unmapped toplevel.
             if let Entry::Occupied(entry) = self.niri.unmapped_windows.entry(surface.clone()) {
