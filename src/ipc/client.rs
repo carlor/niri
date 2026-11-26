@@ -29,6 +29,13 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
         }
     }
 
+    if let Msg::Action {
+        action: Action::SetScreenFilter { path },
+    } = &mut msg
+    {
+        prepare_screen_filter_path(path)?;
+    }
+
     let request = match &msg {
         Msg::Version => Request::Version,
         Msg::Outputs => Request::Outputs,
@@ -834,6 +841,19 @@ fn fmt_rounded(x: f64) -> String {
     }
 }
 
+fn prepare_screen_filter_path(path: &mut String) -> anyhow::Result<()> {
+    if let Ok(rest) = Path::new(path).strip_prefix("~") {
+        let expanded = env::home_dir()
+            .context("could not find the home directory")?
+            .join(rest);
+        *path = expanded
+            .into_os_string()
+            .into_string()
+            .map_err(|path| anyhow!("screen filter path is not valid UTF-8: {path:?}"))?;
+    }
+    ensure_absolute_path(path).context("error making the screen filter path absolute")
+}
+
 fn ensure_absolute_path(path: &mut String) -> anyhow::Result<()> {
     let p = Path::new(path);
     if p.is_relative() {
@@ -852,6 +872,25 @@ mod tests {
     use insta::assert_snapshot;
 
     use super::*;
+
+    #[test]
+    fn screen_filter_paths_are_resolved_by_the_cli() {
+        let mut path = "filters/invert.frag".to_owned();
+        prepare_screen_filter_path(&mut path).unwrap();
+        assert_eq!(
+            Path::new(&path),
+            env::current_dir().unwrap().join("filters/invert.frag")
+        );
+        let mut path = "~/filters/invert.frag".to_owned();
+        prepare_screen_filter_path(&mut path).unwrap();
+        assert_eq!(
+            Path::new(&path),
+            env::home_dir().unwrap().join("filters/invert.frag")
+        );
+        let mut path = "/absolute/filter.frag".to_owned();
+        prepare_screen_filter_path(&mut path).unwrap();
+        assert_eq!(path, "/absolute/filter.frag");
+    }
 
     #[test]
     fn test_fmt_rounded() {

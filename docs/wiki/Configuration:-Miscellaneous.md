@@ -172,6 +172,42 @@ grayscale. Reloading the config restores its configured `off` state. Keeping an 
 toggle binding is recommended: a valid shader can still make the display unreadable.
 Both display-filter toggle actions also work on the lock screen and in the screenshot UI.
 
+#### Selecting and reloading a shader at runtime
+
+You do not need to edit the config or restart niri to switch files:
+
+```sh
+niri msg action set-screen-filter ./filters/invert.frag
+niri msg action reload-screen-filter
+```
+
+`set-screen-filter PATH` reads, compiles, and **enables** that shader immediately, even if the
+filter was off or there was no `screen-filter` section in the config. Relative CLI paths use
+the caller's working directory; `~` is supported. Nothing is written to your config.
+
+`reload-screen-filter` rereads the currently selected file and recompiles it, preserving the
+filter's enabled/disabled state. For an inline shader it recompiles the configured source.
+Selecting the same file again also reloads it, but enables it.
+
+Both commands wait for compilation and return an error/nonzero exit status if the file cannot
+be read or the shader cannot be compiled. The last working shader, selected file, and enabled
+state remain unchanged on failure. Loading/reloading GPU code is not allowed while locked;
+the existing toggle remains available as an escape hatch.
+
+Runtime file selections are temporary: a config reload restores the configured shader.
+Runtime-selected files are not added to the config's automatic file watcher, so use the
+explicit reload command after editing them. Files referenced by `custom-shader path=...` in
+the config remain automatically watched.
+
+Both actions are also bindable. Use absolute paths or `~` in file-selection bindings:
+
+```kdl
+binds {
+    Mod+Shift+F { set-screen-filter "~/.config/niri/filters/invert.frag"; }
+    Mod+Ctrl+F { reload-screen-filter; }
+}
+```
+
 #### Shader interface
 
 Write **GLSL ES 1.00** with this entry point (do not supply `main()`, `#version`, or redeclare

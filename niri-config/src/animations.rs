@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::fs;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use knuffel::ast::SpannedNode;
@@ -160,6 +161,13 @@ pub(crate) fn parse_custom_shader_path<S: knuffel::traits::ErrorSpan>(
     spanned: &SpannedNode<S>,
     ctx: &mut knuffel::decode::Context<S>,
 ) -> Result<String, DecodeError<S>> {
+    parse_custom_shader_file(spanned, ctx).map(|(_, source)| source)
+}
+
+pub(crate) fn parse_custom_shader_file<S: knuffel::traits::ErrorSpan>(
+    spanned: &SpannedNode<S>,
+    ctx: &mut knuffel::decode::Context<S>,
+) -> Result<(PathBuf, String), DecodeError<S>> {
     let mut shader_text = None;
 
     for (name, val) in &spanned.properties {
@@ -177,7 +185,7 @@ pub(crate) fn parse_custom_shader_path<S: knuffel::traits::ErrorSpan>(
             includes.borrow_mut().0.push(path.to_path_buf());
 
             match fs::read_to_string(&path) {
-                Ok(text) => shader_text = Some(text),
+                Ok(text) => shader_text = Some((path, text)),
                 Err(e) => ctx.emit_error(DecodeError::missing(
                     spanned,
                     format!("failed to read custom shader from {path:?}: {e}"),

@@ -1074,6 +1074,14 @@ pub enum Action {
     ToggleGrayscale {},
     /// Toggle the configured custom screen filter without affecting screen captures.
     ToggleScreenFilter {},
+    /// Load and enable a custom screen filter from a file for this session.
+    SetScreenFilter {
+        /// Path to a GLSL fragment shader. The CLI resolves relative paths against its cwd.
+        #[cfg_attr(feature = "clap", arg())]
+        path: String,
+    },
+    /// Reread and recompile the current screen filter, preserving its enabled state.
+    ReloadScreenFilter {},
     /// Toggle visualization of render element opaque regions.
     DebugToggleOpaqueRegions {},
     /// Toggle visualization of output damage.

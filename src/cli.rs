@@ -148,6 +148,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn screen_filter_commands() {
+        let cli =
+            Cli::try_parse_from(["niri", "msg", "action", "set-screen-filter", "filter.frag"])
+                .unwrap();
+        assert!(matches!(cli.subcommand, Some(Sub::Msg {
+            msg: Msg::Action { action: Action::SetScreenFilter { path } }, ..
+        }) if path == "filter.frag"));
+        let cli = Cli::try_parse_from(["niri", "msg", "action", "reload-screen-filter"]).unwrap();
+        assert!(matches!(
+            cli.subcommand,
+            Some(Sub::Msg {
+                msg: Msg::Action {
+                    action: Action::ReloadScreenFilter {}
+                },
+                ..
+            })
+        ));
+        assert!(Cli::try_parse_from(["niri", "msg", "action", "set-screen-filter"]).is_err());
+    }
+
+    #[test]
     fn hidden_windows_command() {
         for args in [
             vec!["niri", "msg", "hidden-windows"],

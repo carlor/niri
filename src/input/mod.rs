@@ -978,6 +978,20 @@ impl State {
                 self.niri.config.borrow_mut().screen_filter.off = !off;
                 self.niri.damage_display_filter();
             }
+            Action::SetScreenFilter(path) => {
+                if let Err(err) = self.set_screen_filter(path.into()) {
+                    warn!("error setting screen filter: {err:#}");
+                    self.niri.config_error_notification.show();
+                    self.niri.queue_redraw_all();
+                }
+            }
+            Action::ReloadScreenFilter => {
+                if let Err(err) = self.reload_screen_filter() {
+                    warn!("error reloading screen filter: {err:#}");
+                    self.niri.config_error_notification.show();
+                    self.niri.queue_redraw_all();
+                }
+            }
             Action::DebugToggleOpaqueRegions => {
                 self.niri.debug_draw_opaque_regions = !self.niri.debug_draw_opaque_regions;
                 self.niri.queue_redraw_all();
@@ -6369,6 +6383,13 @@ mod tests {
         for action in [Action::ToggleGrayscale, Action::ToggleScreenFilter] {
             assert!(allowed_when_locked(&action));
             assert!(allowed_during_screenshot(&action));
+        }
+        // Unlike toggles, these can compile new GPU code and must not bypass the lock.
+        for action in [
+            Action::SetScreenFilter("/filter.frag".into()),
+            Action::ReloadScreenFilter,
+        ] {
+            assert!(!allowed_when_locked(&action));
         }
     }
 

@@ -1,6 +1,8 @@
+use std::path::PathBuf;
+
 use knuffel::errors::DecodeError;
 
-use crate::animations::parse_custom_shader_path;
+use crate::animations::parse_custom_shader_file;
 use crate::utils::parse_arg_node;
 
 /// A display-only shader, applied before the optional grayscale conversion.
@@ -14,7 +16,9 @@ pub struct ScreenFilter {
 
 impl ScreenFilter {
     pub fn shader_source(&self) -> Option<&str> {
-        self.custom_shader.as_ref().map(|shader| shader.0.as_str())
+        self.custom_shader
+            .as_ref()
+            .map(|shader| shader.source.as_str())
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -23,19 +27,29 @@ impl ScreenFilter {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CustomShader(pub String);
+pub struct CustomShader {
+    pub source: String,
+    /// The original resolved file path, retained for explicit reloads.
+    pub path: Option<PathBuf>,
+}
 
 impl<S: knuffel::traits::ErrorSpan> knuffel::Decode<S> for CustomShader {
     fn decode_node(
         node: &knuffel::ast::SpannedNode<S>,
         ctx: &mut knuffel::decode::Context<S>,
     ) -> Result<Self, DecodeError<S>> {
-        let source = if node.properties.contains_key("path") {
-            parse_custom_shader_path(node, ctx)?
+        if node.properties.contains_key("path") {
+            let (path, source) = parse_custom_shader_file(node, ctx)?;
+            Ok(Self {
+                source,
+                path: Some(path),
+            })
         } else {
-            parse_arg_node("custom-shader", node, ctx)?
-        };
-        Ok(Self(source))
+            Ok(Self {
+                source: parse_arg_node("custom-shader", node, ctx)?,
+                path: None,
+            })
+        }
     }
 }
 
@@ -69,6 +83,31 @@ mod tests {
             Action::from(niri_ipc::Action::ToggleScreenFilter {}),
             Action::ToggleScreenFilter
         );
+        let config = Config::parse_mem(
+            r#"binds {
+                Mod+S { set-screen-filter "~/filters/invert.frag"; }
+                Mod+R { reload-screen-filter; }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.binds.0[0].action,
+            BoundAction::Press(Action::SetScreenFilter("~/filters/invert.frag".into()))
+        );
+        assert_eq!(
+            config.binds.0[1].action,
+            BoundAction::Press(Action::ReloadScreenFilter)
+        );
+        assert_eq!(
+            Action::from(niri_ipc::Action::SetScreenFilter {
+                path: "/shader.frag".into()
+            }),
+            Action::SetScreenFilter("/shader.frag".into())
+        );
+        assert_eq!(
+            Action::from(niri_ipc::Action::ReloadScreenFilter {}),
+            Action::ReloadScreenFilter
+        );
         let config =
             Config::parse_mem(r#"screen-filter { off; custom-shader "shader"; }"#).unwrap();
         assert!(!config.screen_filter.is_enabled());
@@ -100,10 +139,22 @@ mod tests {
             parsed.includes.as_slice(),
             std::slice::from_ref(&shader_path)
         );
+        let config = parsed.config.unwrap();
         assert_eq!(
-            parsed.config.unwrap().screen_filter.shader_source(),
+            config.screen_filter.shader_source(),
             Some(std::fs::read_to_string(shader_path).unwrap().as_str())
         );
+        assert_eq!(
+            config.screen_filter.custom_shader.unwrap().path,
+            Some(
+                config_path
+                    .parent()
+                    .unwrap()
+                    .join("../resources/screen-filters/invert.frag")
+            )
+        );
+        let inline = Config::parse_mem(r#"screen-filter { custom-shader "source"; }"#).unwrap();
+        assert!(inline.screen_filter.custom_shader.unwrap().path.is_none());
 
         let parsed = Config::parse(
             &config_path,

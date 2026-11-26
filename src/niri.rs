@@ -1738,6 +1738,73 @@ impl State {
         self.ipc_keyboard_layouts_changed();
     }
 
+    /// Load and enable a transient screen filter without modifying the config on disk.
+    pub fn set_screen_filter(&mut self, path: PathBuf) -> anyhow::Result<()> {
+        ensure!(
+            !self.niri.is_locked(),
+            "cannot set a screen filter while the session is locked"
+        );
+        let path = if let Ok(rest) = path.strip_prefix("~") {
+            env::home_dir()
+                .context("could not find the home directory")?
+                .join(rest)
+        } else {
+            path
+        };
+        let path = std::path::absolute(path).context("error resolving screen filter path")?;
+        let source = std::fs::read_to_string(&path)
+            .with_context(|| format!("error reading screen filter {path:?}"))?;
+        let shader = niri_config::screen_filter::CustomShader {
+            source,
+            path: Some(path),
+        };
+        self.install_screen_filter(shader, true)
+    }
+
+    /// Reread the selected file (or recompile inline code) without enabling a disabled filter.
+    pub fn reload_screen_filter(&mut self) -> anyhow::Result<()> {
+        ensure!(
+            !self.niri.is_locked(),
+            "cannot reload a screen filter while the session is locked"
+        );
+        let mut shader = self
+            .niri
+            .config
+            .borrow()
+            .screen_filter
+            .custom_shader
+            .clone()
+            .context("no screen filter is configured")?;
+        if let Some(path) = &shader.path {
+            shader.source = std::fs::read_to_string(path)
+                .with_context(|| format!("error reading screen filter {path:?}"))?;
+        }
+        self.install_screen_filter(shader, false)
+    }
+
+    fn install_screen_filter(
+        &mut self,
+        shader: niri_config::screen_filter::CustomShader,
+        enable: bool,
+    ) -> anyhow::Result<()> {
+        // Compile first. Read/compile failures must not change the selected path, source,
+        // enabled state, or last working GPU program.
+        self.backend
+            .with_primary_renderer(|renderer| {
+                shaders::set_custom_screen_filter(renderer, Some(&shader.source))
+            })
+            .context("no renderer is available to compile the screen filter")?
+            .context("error compiling screen filter")?;
+        let mut config = self.niri.config.borrow_mut();
+        config.screen_filter.custom_shader = Some(shader);
+        if enable {
+            config.screen_filter.off = false;
+        }
+        drop(config);
+        self.niri.damage_display_filter();
+        Ok(())
+    }
+
     pub fn reload_config(&mut self, config: Result<Config, ()>) {
         let _span = tracy_client::span!("State::reload_config");
 

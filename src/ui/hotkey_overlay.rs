@@ -521,6 +521,8 @@ fn action_name(action: &Action) -> String {
         Action::ToggleOverview => String::from("Open the Overview"),
         Action::ToggleGrayscale => String::from("Toggle Grayscale"),
         Action::ToggleScreenFilter => String::from("Toggle Screen Filter"),
+        Action::SetScreenFilter(_) => String::from("Set Screen Filter"),
+        Action::ReloadScreenFilter => String::from("Reload Screen Filter"),
         Action::Screenshot(_, _) => String::from("Take a Screenshot"),
         Action::Spawn(args) => format!(
             "Spawn <span face='monospace' bgcolor='#000000'>{}</span>",

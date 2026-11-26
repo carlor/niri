@@ -412,16 +412,16 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
                 // Make sure some logic like workspace clean-up has a chance to run before doing
                 // actions.
                 state.niri.advance_animations();
-                // This action didn't come from an input, so just use the current time.
-                let time = InputTime::now();
-                state.do_action(action, false, time);
-                let _ = tx.send_blocking(());
+                let result = perform_action(state, action);
+                let _ = tx.send_blocking(result);
             });
 
             // Wait until the action has been processed before returning. This is important for a
             // few actions, for instance for DoScreenTransition this wait ensures that the screen
             // contents were sampled into the texture.
-            let _ = rx.recv().await;
+            rx.recv()
+                .await
+                .map_err(|_| String::from("error processing action"))??;
             Response::Handled
         }
         Request::Output { output, action } => {
@@ -486,7 +486,27 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
     Ok(response)
 }
 
+/// Unlike ordinary fire-and-forget actions, shader selection/reload report file and
+/// compilation errors to the caller, after the compositor has attempted the change.
+pub(crate) fn perform_action(state: &mut State, action: niri_config::Action) -> Result<(), String> {
+    let result = match action {
+        niri_config::Action::SetScreenFilter(path) => state.set_screen_filter(path.into()),
+        niri_config::Action::ReloadScreenFilter => state.reload_screen_filter(),
+        action => {
+            // This action didn't come from an input, so just use the current time.
+            state.do_action(action, false, InputTime::now());
+            Ok(())
+        }
+    };
+    result.map_err(|err| format!("{err:#}"))
+}
+
 fn validate_action(action: &Action) -> Result<(), String> {
+    if let Action::SetScreenFilter { path } = action {
+        if !Path::new(path).is_absolute() {
+            return Err(format!("path must be absolute: {path}"));
+        }
+    }
     if let Action::Screenshot { path, .. }
     | Action::ScreenshotScreen { path, .. }
     | Action::ScreenshotWindow { path, .. }
@@ -1094,6 +1114,49 @@ mod tests {
             },
             focus_timestamp: None,
         }
+    }
+
+    #[test]
+    fn screen_filter_actions_validate_paths_and_return_processing_errors() {
+        assert!(validate_action(&Action::SetScreenFilter {
+            path: "relative.frag".into()
+        })
+        .is_err());
+        assert!(validate_action(&Action::SetScreenFilter {
+            path: "/absolute.frag".into()
+        })
+        .is_ok());
+        assert!(validate_action(&Action::ReloadScreenFilter {}).is_ok());
+
+        let mut event_loop = EventLoop::<'static, State>::try_new().unwrap();
+        let mut state = State::new(
+            niri_config::Config::default(),
+            event_loop.handle(),
+            event_loop.get_signal(),
+            smithay::reexports::wayland_server::Display::new().unwrap(),
+            true,
+            false,
+            false,
+        )
+        .unwrap();
+        let (_, scheduler) = calloop::futures::executor().unwrap();
+        let ctx = ClientCtx {
+            event_loop: event_loop.handle(),
+            scheduler,
+            ipc_outputs: Default::default(),
+            event_streams: Default::default(),
+            event_stream_state: Default::default(),
+        };
+        let mut request = Box::pin(process(
+            &ctx,
+            Request::Action(Action::ReloadScreenFilter {}),
+        ));
+        assert!(request.as_mut().now_or_never().is_none());
+        event_loop
+            .dispatch(std::time::Duration::ZERO, &mut state)
+            .unwrap();
+        let error = request.as_mut().now_or_never().unwrap().unwrap_err();
+        assert!(error.contains("no screen filter is configured"), "{error}");
     }
 
     #[test]

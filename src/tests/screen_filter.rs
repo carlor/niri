@@ -7,8 +7,10 @@ use smithay::backend::renderer::gles::GlesTexture;
 use smithay::backend::renderer::{Bind as _, Color32F, ExportMem as _, Offscreen as _};
 use smithay::output::{Output, Scale};
 use smithay::utils::Transform;
+use xshell::Shell;
 
 use super::Fixture;
+use crate::ipc::server::perform_action;
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
 use crate::render_helpers::{copy_framebuffer, render_to_vec, RenderCtx, RenderTarget};
 use crate::utils::output_size;
@@ -26,7 +28,10 @@ fn config(shader: Option<&str>) -> Config {
     )
     .unwrap();
     config.screen_filter.custom_shader =
-        shader.map(|source| niri_config::screen_filter::CustomShader(source.to_owned()));
+        shader.map(|source| niri_config::screen_filter::CustomShader {
+            source: source.to_owned(),
+            path: None,
+        });
     config
 }
 
@@ -123,6 +128,153 @@ fn toggle_and_config_reload() {
     action(&mut f, Action::ToggleGrayscale);
     action(&mut f, Action::ToggleScreenFilter);
     assert!(f.niri().config.borrow().grayscale);
+}
+
+#[test]
+fn runtime_shader_errors_leave_config_unchanged_without_a_renderer() {
+    let sh = Shell::new().unwrap();
+    let dir = sh.create_temp_dir().unwrap();
+    let path = dir.path().join("filter.frag");
+    sh.write_file(&path, INVERT).unwrap();
+    let mut f = Fixture::with_config(config(None));
+    let error = perform_action(f.niri_state(), Action::ReloadScreenFilter).unwrap_err();
+    assert!(error.contains("no screen filter is configured"), "{error}");
+    let error = perform_action(
+        f.niri_state(),
+        Action::SetScreenFilter(path.to_str().unwrap().into()),
+    )
+    .unwrap_err();
+    assert!(error.contains("no renderer"), "{error}");
+    assert!(f
+        .niri()
+        .config
+        .borrow()
+        .screen_filter
+        .custom_shader
+        .is_none());
+}
+
+#[test]
+fn egl_runtime_shader_selection_and_explicit_reload_are_atomic() {
+    let sh = Shell::new().unwrap();
+    let dir = sh.create_temp_dir().unwrap();
+    let path = dir.path().join("filter.frag");
+    let other = dir.path().join("other.frag");
+    sh.write_file(&path, INVERT).unwrap();
+    sh.write_file(&other, "invalid GLSL").unwrap();
+    let mut f = Fixture::with_config(config(None));
+    f.niri_state().backend.headless().add_renderer().unwrap();
+    f.add_output(1, (80, 60));
+    let output = f.niri_output(1);
+    let mut damage = OutputDamageTracker::from_output(&output);
+    let mut texture = f
+        .niri_state()
+        .backend
+        .with_primary_renderer(|renderer| {
+            renderer
+                .create_buffer(Fourcc::Abgr8888, (80, 60).into())
+                .unwrap()
+        })
+        .unwrap();
+    f.niri().config.borrow_mut().screen_filter.off = true;
+    perform_action(
+        f.niri_state(),
+        Action::SetScreenFilter(path.to_str().unwrap().into()),
+    )
+    .unwrap();
+    assert!(f.niri().config.borrow().screen_filter.is_enabled());
+    assert_color(
+        &cached_pixels(&mut f, &output, &mut texture, &mut damage),
+        [0, 255, 255, 255],
+    );
+
+    let blue = "vec4 filter_color(vec4 c, vec2 uv) { return vec4(0., 0., 1., 1.); }";
+    sh.write_file(&path, blue).unwrap();
+    perform_action(f.niri_state(), Action::ReloadScreenFilter).unwrap();
+    assert_color(
+        &cached_pixels(&mut f, &output, &mut texture, &mut damage),
+        [0, 0, 255, 255],
+    );
+    for target in [RenderTarget::ScreenCapture, RenderTarget::Screencast] {
+        assert_color(&pixels(&mut f, &output, target), [255, 0, 0, 255]);
+    }
+
+    // Reload preserves the off state, but selecting a file explicitly enables it.
+    action(&mut f, Action::ToggleScreenFilter);
+    sh.write_file(&path, INVERT).unwrap();
+    perform_action(f.niri_state(), Action::ReloadScreenFilter).unwrap();
+    assert!(!f.niri().config.borrow().screen_filter.is_enabled());
+    assert_color(
+        &cached_pixels(&mut f, &output, &mut texture, &mut damage),
+        [255, 0, 0, 255],
+    );
+    action(&mut f, Action::ToggleScreenFilter);
+    let selected = f.niri().config.borrow().screen_filter.clone();
+
+    // A missing/invalid file must return an IPC error without changing either selection or pixels.
+    for candidate in [other.clone(), dir.path().join("missing.frag")] {
+        assert!(perform_action(
+            f.niri_state(),
+            Action::SetScreenFilter(candidate.to_str().unwrap().into())
+        )
+        .is_err());
+        assert_eq!(f.niri().config.borrow().screen_filter, selected);
+    }
+    sh.remove_path(&path).unwrap();
+    assert!(perform_action(f.niri_state(), Action::ReloadScreenFilter).is_err());
+    assert_eq!(f.niri().config.borrow().screen_filter, selected);
+    sh.write_file(&path, "invalid GLSL").unwrap();
+    assert!(perform_action(f.niri_state(), Action::ReloadScreenFilter).is_err());
+    assert_eq!(f.niri().config.borrow().screen_filter, selected);
+    assert_color(
+        &cached_pixels(&mut f, &output, &mut texture, &mut damage),
+        [0, 255, 255, 255],
+    );
+
+    sh.write_file(&other, blue).unwrap();
+    perform_action(
+        f.niri_state(),
+        Action::SetScreenFilter(other.to_str().unwrap().into()),
+    )
+    .unwrap();
+    assert_eq!(
+        f.niri()
+            .config
+            .borrow()
+            .screen_filter
+            .custom_shader
+            .as_ref()
+            .unwrap()
+            .path,
+        Some(other)
+    );
+    assert_color(
+        &cached_pixels(&mut f, &output, &mut texture, &mut damage),
+        [0, 0, 255, 255],
+    );
+
+    // Reload of an inline shader recompiles it; a config reload resets the transient selection.
+    f.niri_state().reload_config(Ok(config(Some(INVERT))));
+    perform_action(f.niri_state(), Action::ReloadScreenFilter).unwrap();
+    assert!(f
+        .niri()
+        .config
+        .borrow()
+        .screen_filter
+        .custom_shader
+        .as_ref()
+        .unwrap()
+        .path
+        .is_none());
+    assert_color(
+        &cached_pixels(&mut f, &output, &mut texture, &mut damage),
+        [0, 255, 255, 255],
+    );
+    f.niri_state().reload_config(Ok(config(None)));
+    assert_color(
+        &cached_pixels(&mut f, &output, &mut texture, &mut damage),
+        [255, 0, 0, 255],
+    );
 }
 
 #[test]
