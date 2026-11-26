@@ -519,6 +519,7 @@ fn action_name(action: &Action) -> String {
             String::from("Switch Focus Between Floating and Tiling")
         }
         Action::ToggleOverview => String::from("Open the Overview"),
+        Action::ToggleGrayscale => String::from("Toggle Grayscale"),
         Action::Screenshot(_, _) => String::from("Take a Screenshot"),
         Action::Spawn(args) => format!(
             "Spawn <span face='monospace' bgcolor='#000000'>{}</span>",

@@ -968,6 +968,11 @@ impl State {
                 self.backend.toggle_debug_tint();
                 self.niri.queue_redraw_all();
             }
+            Action::ToggleGrayscale => {
+                let enabled = self.niri.config.borrow().grayscale;
+                self.niri.config.borrow_mut().grayscale = !enabled;
+                self.niri.queue_redraw_all();
+            }
             Action::DebugToggleOpaqueRegions => {
                 self.niri.debug_draw_opaque_regions = !self.niri.debug_draw_opaque_regions;
                 self.niri.queue_redraw_all();

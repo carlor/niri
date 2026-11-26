@@ -9,6 +9,8 @@ spawn-sh-at-startup "qs -c ~/source/qs/MyAwesomeShell"
 
 prefer-no-csd
 
+grayscale
+
 screenshot-path "~/Pictures/Screenshots/Screenshot from %Y-%m-%d %H-%M-%S.png"
 
 environment {
@@ -115,6 +117,27 @@ With `prefer-no-csd` set, applications that negotiate server-side decorations th
 ```kdl
 prefer-no-csd
 ```
+
+### `grayscale`
+
+Display all outputs in grayscale, including windows, panels, backgrounds, the cursor, and the
+lock screen. Disabled by default. Both `grayscale` and `grayscale true` enable it;
+`grayscale false` disables it. Changes apply live.
+
+Screenshots, screencasts, and color picking keep their original colors. This is a display
+filter, not a change to application content.
+
+Toggle it at runtime with `niri msg action toggle-grayscale`, or bind the action:
+
+```kdl
+binds {
+    Mod+Shift+G repeat=false { toggle-grayscale; }
+}
+```
+
+Reloading the config restores the configured value. Grayscale uses GPU compositing, disabling
+direct scanout and hardware cursor planes while enabled. Like non-xray background effects, it
+requires renderer support for framebuffer blitting.
 
 ### `screenshot-path`
 

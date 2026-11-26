@@ -9,6 +9,7 @@ mod animations;
 mod binds;
 mod floating;
 mod fullscreen;
+mod grayscale;
 mod layer_shell;
 mod minimization;
 mod remove_output;

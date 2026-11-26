@@ -1967,7 +1967,8 @@ impl Tty {
         // Overlay planes are disabled by default as they cause weird performance issues on my
         // system.
         let flags = {
-            let debug = &self.config.borrow().debug;
+            let config = self.config.borrow();
+            let debug = &config.debug;
 
             let primary_scanout_flag = if debug.restrict_primary_scanout_to_matching_format {
                 FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT
@@ -1985,6 +1986,13 @@ impl Tty {
             }
             if debug.disable_cursor_plane {
                 flags.remove(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT);
+            }
+            // All content, including cursors and any overlay/underlay planes, must pass
+            // through the final display filter rather than bypassing GPU compositing.
+            if config.grayscale {
+                flags.remove(
+                    FrameFlags::ALLOW_SCANOUT | FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY,
+                );
             }
             if debug.skip_cursor_only_updates_during_vrr {
                 let output_state = niri.output_state.get(output).unwrap();

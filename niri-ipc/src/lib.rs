@@ -1070,6 +1070,8 @@ pub enum Action {
     },
     /// Toggle a debug tint on windows.
     ToggleDebugTint {},
+    /// Toggle grayscale on all displays without affecting screen captures.
+    ToggleGrayscale {},
     /// Toggle visualization of render element opaque regions.
     DebugToggleOpaqueRegions {},
     /// Toggle visualization of output damage.

@@ -74,6 +74,7 @@ pub struct Config {
     pub spawn_sh_at_startup: Vec<SpawnShAtStartup>,
     pub layout: Layout,
     pub prefer_no_csd: bool,
+    pub grayscale: bool,
     pub cursor: Cursor,
     pub screenshot_path: ScreenshotPath,
     pub clipboard: Clipboard,
@@ -242,6 +243,7 @@ where
                 "prefer-no-csd" => {
                     config.borrow_mut().prefer_no_csd = Flag::decode_node(node, ctx)?.0
                 }
+                "grayscale" => config.borrow_mut().grayscale = Flag::decode_node(node, ctx)?.0,
 
                 "screenshot-path" => {
                     let part = knuffel::Decode::decode_node(node, ctx)?;
@@ -756,6 +758,27 @@ mod tests {
             }
             "#,
             "pass-through is only supported for keyboard binds",
+        );
+    }
+
+    #[test]
+    fn parse_grayscale() {
+        assert!(!Config::parse_mem("").unwrap().grayscale);
+        assert!(Config::parse_mem("grayscale").unwrap().grayscale);
+        assert!(Config::parse_mem("grayscale true").unwrap().grayscale);
+        assert!(!Config::parse_mem("grayscale false").unwrap().grayscale);
+        assert_parse_error("grayscale 1", "boolean");
+        assert_parse_error("grayscale\ngrayscale", "duplicate node");
+
+        let config =
+            Config::parse_mem("binds { Mod+Shift+G repeat=false { toggle-grayscale; }; }").unwrap();
+        assert_eq!(
+            config.binds.0[0].action,
+            BoundAction::Press(Action::ToggleGrayscale)
+        );
+        assert_eq!(
+            Action::from(niri_ipc::Action::ToggleGrayscale {}),
+            Action::ToggleGrayscale
         );
     }
 
@@ -2000,6 +2023,7 @@ mod tests {
                 },
             },
             prefer_no_csd: true,
+            grayscale: false,
             cursor: Cursor {
                 xcursor_theme: "breeze_cursors",
                 xcursor_size: 16,

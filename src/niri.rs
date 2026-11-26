@@ -167,8 +167,10 @@ use crate::protocols::gamma_control::GammaControlManagerState;
 use crate::protocols::mutter_x11_interop::MutterX11InteropManagerState;
 use crate::protocols::output_management::OutputManagementManagerState;
 use crate::protocols::screencopy::{Screencopy, ScreencopyManagerState};
+use crate::render_helpers::background_effect::RenderParams;
 use crate::render_helpers::blur::BlurOptions;
 use crate::render_helpers::debug::push_opaque_regions;
+use crate::render_helpers::framebuffer_effect::{FramebufferEffect, FramebufferEffectElement};
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
@@ -567,6 +569,8 @@ pub struct OutputState {
     pub lock_surface: Option<LockSurface>,
     pub lock_color_buffer: SolidColorBuffer,
     screen_transition: Option<ScreenTransition>,
+    /// Final display-only color filter, above even the pointer and lock screen.
+    grayscale_effect: FramebufferEffect,
     /// Damage tracker used for the debug damage visualization.
     pub debug_damage_tracker: OutputDamageTracker,
 }
@@ -3312,6 +3316,7 @@ impl Niri {
             lock_surface: None,
             lock_color_buffer: SolidColorBuffer::new(size, CLEAR_COLOR_LOCKED),
             screen_transition: None,
+            grayscale_effect: FramebufferEffect::new(),
             debug_damage_tracker: OutputDamageTracker::from_output(&output),
         };
         let rv = self.output_state.insert(output.clone(), state);
@@ -4802,7 +4807,25 @@ impl Niri {
             push
         };
 
-        // The pointer goes on the top.
+        // Apply grayscale last, above everything including the pointer. The TTY backend
+        // disables scanout while this is enabled so hardware planes cannot bypass the
+        // filter. Captures deliberately retain their original colors.
+        if ctx.target == RenderTarget::Output && self.config.borrow().grayscale {
+            let params = RenderParams {
+                geometry: Rectangle::from_size(output_size(output)),
+                subregion: None,
+                clip: None,
+                scale: output.current_scale().fractional_scale(),
+            };
+            push(
+                state
+                    .grayscale_effect
+                    .render(None, params, None, 0., 0.)
+                    .into(),
+            );
+        }
+
+        // The pointer goes on top of the scene, below the display color filter.
         if include_pointer && self.pointer_visibility.is_visible() {
             self.render_pointer(ctx.renderer, output, &mut |elem| push(elem.into()));
         }
@@ -7613,7 +7636,12 @@ impl Niri {
                         xray: None,
                     };
                     let elements = self.render_to_vec(ctx, &output, false);
-                    let elements = elements.iter().rev();
+                    // Keep the display filter out of the transition snapshot: it will be
+                    // applied to the final frame, and may be toggled during the transition.
+                    let elements = elements
+                        .iter()
+                        .rev()
+                        .filter(|elem| !matches!(elem, OutputRenderElements::Grayscale(_)));
 
                     let res = render_to_texture(
                         renderer,
@@ -7893,6 +7921,7 @@ niri_render_elements! {
         WindowMruUi = WindowMruUiRenderElement<R>,
         ExitConfirmDialog = ExitConfirmDialogRenderElement,
         Texture = PrimaryGpuTextureRenderElement,
+        Grayscale = FramebufferEffectElement,
         // Used for the CPU-rendered panels.
         RelocatedMemoryBuffer = RelocateRenderElement<MemoryRenderBufferRenderElement<R>>,
     }
