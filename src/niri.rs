@@ -570,7 +570,7 @@ pub struct OutputState {
     pub lock_color_buffer: SolidColorBuffer,
     screen_transition: Option<ScreenTransition>,
     /// Final display-only color filter, above even the pointer and lock screen.
-    grayscale_effect: FramebufferEffect,
+    display_filter: FramebufferEffect,
     /// Damage tracker used for the debug damage visualization.
     pub debug_damage_tracker: OutputDamageTracker,
 }
@@ -1792,10 +1792,13 @@ impl State {
         let mut window_rules_changed = false;
         let mut layer_rules_changed = false;
         let mut shaders_changed = false;
+        let mut screen_filter_failed = false;
         let mut cursor_inactivity_timeout_changed = false;
         let mut recent_windows_changed = false;
         let mut xwls_changed = false;
         let mut old_config = self.niri.config.borrow_mut();
+        let display_filter_changed = config.grayscale != old_config.grayscale
+            || config.screen_filter != old_config.screen_filter;
 
         // Reload the cursor.
         if config.cursor != old_config.cursor {
@@ -1910,6 +1913,18 @@ impl State {
             shaders_changed = true;
         }
 
+        if config.screen_filter.custom_shader != old_config.screen_filter.custom_shader {
+            self.backend.with_primary_renderer(|renderer| {
+                if let Err(err) = shaders::set_custom_screen_filter(
+                    renderer,
+                    config.screen_filter.shader_source(),
+                ) {
+                    warn!("error compiling custom screen filter: {err:?}");
+                    screen_filter_failed = true;
+                }
+            });
+        }
+
         if config.cursor.hide_after_inactive_ms != old_config.cursor.hide_after_inactive_ms {
             cursor_inactivity_timeout_changed = true;
         }
@@ -1948,6 +1963,13 @@ impl State {
 
         // Release the borrow.
         drop(old_config);
+
+        if display_filter_changed {
+            self.niri.damage_display_filter();
+        }
+        if screen_filter_failed {
+            self.niri.config_error_notification.show();
+        }
 
         // Now with a &mut self we can reload the xkb config.
         if reload_xkb {
@@ -3316,7 +3338,7 @@ impl Niri {
             lock_surface: None,
             lock_color_buffer: SolidColorBuffer::new(size, CLEAR_COLOR_LOCKED),
             screen_transition: None,
-            grayscale_effect: FramebufferEffect::new(),
+            display_filter: FramebufferEffect::new(),
             debug_damage_tracker: OutputDamageTracker::from_output(&output),
         };
         let rv = self.output_state.insert(output.clone(), state);
@@ -4737,6 +4759,13 @@ impl Niri {
         }
     }
 
+    pub fn damage_display_filter(&mut self) {
+        for state in self.output_state.values_mut() {
+            state.display_filter.damage();
+        }
+        self.queue_redraw_all();
+    }
+
     pub fn update_shaders(&mut self) {
         self.layout.update_shaders();
 
@@ -4807,22 +4836,35 @@ impl Niri {
             push
         };
 
-        // Apply grayscale last, above everything including the pointer. The TTY backend
+        // Apply the display filter last, above everything including the pointer. The TTY backend
         // disables scanout while this is enabled so hardware planes cannot bypass the
         // filter. Captures deliberately retain their original colors.
-        if ctx.target == RenderTarget::Output && self.config.borrow().grayscale {
-            let params = RenderParams {
-                geometry: Rectangle::from_size(output_size(output)),
-                subregion: None,
-                clip: None,
-                scale: output.current_scale().fractional_scale(),
+        if ctx.target == RenderTarget::Output {
+            let config = self.config.borrow();
+            let shader = if config.screen_filter.is_enabled() {
+                shaders::Shaders::get(ctx.renderer)
+                    .custom_screen_filter
+                    .borrow()
+                    .clone()
+            } else {
+                None
             };
-            push(
-                state
-                    .grayscale_effect
-                    .render(None, params, None, 0., 0.)
-                    .into(),
-            );
+            if config.grayscale || shader.is_some() {
+                let params = RenderParams {
+                    geometry: Rectangle::from_size(output_size(output)),
+                    subregion: None,
+                    clip: None,
+                    scale: output.current_scale().fractional_scale(),
+                };
+                let saturation = if config.grayscale { 0. } else { 1. };
+                let mut element = state
+                    .display_filter
+                    .render(None, params, None, 0., saturation);
+                if let Some(shader) = shader {
+                    element = element.with_screen_shader(shader);
+                }
+                push(element.into());
+            }
         }
 
         // The pointer goes on top of the scene, below the display color filter.
@@ -7641,7 +7683,7 @@ impl Niri {
                     let elements = elements
                         .iter()
                         .rev()
-                        .filter(|elem| !matches!(elem, OutputRenderElements::Grayscale(_)));
+                        .filter(|elem| !matches!(elem, OutputRenderElements::DisplayFilter(_)));
 
                     let res = render_to_texture(
                         renderer,
@@ -7921,7 +7963,7 @@ niri_render_elements! {
         WindowMruUi = WindowMruUiRenderElement<R>,
         ExitConfirmDialog = ExitConfirmDialogRenderElement,
         Texture = PrimaryGpuTextureRenderElement,
-        Grayscale = FramebufferEffectElement,
+        DisplayFilter = FramebufferEffectElement,
         // Used for the CPU-rendered panels.
         RelocatedMemoryBuffer = RelocateRenderElement<MemoryRenderBufferRenderElement<R>>,
     }

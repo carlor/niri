@@ -971,7 +971,12 @@ impl State {
             Action::ToggleGrayscale => {
                 let enabled = self.niri.config.borrow().grayscale;
                 self.niri.config.borrow_mut().grayscale = !enabled;
-                self.niri.queue_redraw_all();
+                self.niri.damage_display_filter();
+            }
+            Action::ToggleScreenFilter => {
+                let off = self.niri.config.borrow().screen_filter.off;
+                self.niri.config.borrow_mut().screen_filter.off = !off;
+                self.niri.damage_display_filter();
             }
             Action::DebugToggleOpaqueRegions => {
                 self.niri.debug_draw_opaque_regions = !self.niri.debug_draw_opaque_regions;
@@ -5512,6 +5517,9 @@ fn allowed_when_locked(action: &Action) -> bool {
             | Action::SwitchLayout(_)
             | Action::ToggleKeyboardShortcutsInhibit
             | Action::ToggleTouchpad
+            // Display-only accessibility filters must have an escape hatch on the lock screen.
+            | Action::ToggleGrayscale
+            | Action::ToggleScreenFilter
     )
 }
 
@@ -5558,6 +5566,8 @@ fn allowed_during_screenshot(action: &Action) -> bool {
             | Action::PowerOffMonitors
             | Action::PowerOnMonitors
             | Action::ToggleTouchpad
+            | Action::ToggleGrayscale
+            | Action::ToggleScreenFilter
             // Intended for binds such as volume up/down, lock the screen, etc.
             | Action::Spawn(_)
             | Action::SpawnSh(_)
@@ -6352,6 +6362,14 @@ mod tests {
             .as_ref(),
             Some(&bindings.0[5])
         );
+    }
+
+    #[test]
+    fn display_filter_toggles_are_available_when_locked_and_during_screenshot() {
+        for action in [Action::ToggleGrayscale, Action::ToggleScreenFilter] {
+            assert!(allowed_when_locked(&action));
+            assert!(allowed_during_screenshot(&action));
+        }
     }
 
     #[test]

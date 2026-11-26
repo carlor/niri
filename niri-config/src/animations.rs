@@ -156,7 +156,7 @@ impl Default for WorkspaceSwitchAnim {
     }
 }
 
-fn parse_custom_shader_path<S: knuffel::traits::ErrorSpan>(
+pub(crate) fn parse_custom_shader_path<S: knuffel::traits::ErrorSpan>(
     spanned: &SpannedNode<S>,
     ctx: &mut knuffel::decode::Context<S>,
 ) -> Result<String, DecodeError<S>> {

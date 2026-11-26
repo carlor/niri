@@ -203,6 +203,12 @@ impl Winit {
         if let Some(src) = config.animations.window_open.custom_shader.as_deref() {
             shaders::set_custom_open_program(renderer, Some(src));
         }
+        if let Err(err) =
+            shaders::set_custom_screen_filter(renderer, config.screen_filter.shader_source())
+        {
+            warn!("error compiling custom screen filter: {err:?}");
+            niri.config_error_notification.show();
+        }
         drop(config);
 
         niri.update_shaders();

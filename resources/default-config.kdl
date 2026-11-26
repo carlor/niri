@@ -291,6 +291,18 @@ hotkey-overlay {
 // Toggle at runtime with `niri msg action toggle-grayscale` or a matching bind.
 // grayscale
 
+// A custom display-only GLSL filter. Screenshots and screencasts remain unfiltered.
+// You can instead use: custom-shader path="~/.config/niri/filters/invert.frag"
+// Toggle with `niri msg action toggle-screen-filter`.
+/-screen-filter {
+    // off
+    custom-shader r"
+        vec4 filter_color(vec4 color, vec2 coords) {
+            return vec4(vec3(color.a) - color.rgb, color.a);
+        }
+    "
+}
+
 // You can change the path where screenshots are saved.
 // A ~ at the front will be expanded to the home directory.
 // The path is formatted with strftime(3) to give you the screenshot date and time.

@@ -139,6 +139,83 @@ Reloading the config restores the configured value. Grayscale uses GPU compositi
 direct scanout and hardware cursor planes while enabled. Like non-xray background effects, it
 requires renderer support for framebuffer blitting.
 
+### `screen-filter`
+
+Apply a custom GLSL fragment shader to every display, including windows, panels, the cursor,
+and the lock screen. Like [`grayscale`](#grayscale), this is display-only: screenshots,
+screencasts, and color picking retain the original image. When both are enabled, the custom
+shader runs **before** grayscale.
+
+```kdl
+screen-filter {
+    // Uncomment to start with the custom filter disabled.
+    // off
+    custom-shader r"
+        vec4 filter_color(vec4 color, vec2 coords) {
+            return vec4(vec3(color.a) - color.rgb, color.a);
+        }
+    "
+}
+
+binds {
+    Mod+Shift+S repeat=false allow-inhibiting=false { toggle-screen-filter; }
+}
+```
+
+Alternatively, put the GLSL in a file and replace the `custom-shader` node with
+`custom-shader path="~/.config/niri/filters/invert.frag"`. Relative paths resolve relative to
+the config file containing the node. Shader files are watched and reloaded automatically,
+including files that were missing when the config was parsed.
+
+`niri msg action toggle-screen-filter` toggles only the custom filter, independently of
+grayscale. Reloading the config restores its configured `off` state. Keeping an emergency
+toggle binding is recommended: a valid shader can still make the display unreadable.
+Both display-filter toggle actions also work on the lock screen and in the screenshot UI.
+
+#### Shader interface
+
+Write **GLSL ES 1.00** with this entry point (do not supply `main()`, `#version`, or redeclare
+niri's uniforms):
+
+```glsl
+vec4 filter_color(vec4 color, vec2 coords) {
+    return color;
+}
+```
+
+- `color`: the unfiltered scene pixel, in premultiplied RGBA. Preserve `color.a` for ordinary
+  color filters. Operations use the compositor's existing encoded color values, not
+  automatically linearized light.
+- `coords`: normalized output-relative coordinates, with `(0, 0)` at the visible top-left and
+  `(1, 1)` at the bottom-right. Output rotation, mirroring, and scale are handled by niri.
+- `niri_size`: `vec2` uniform with the visible output width and height in **physical pixels**.
+  For pixel-sized offsets, use `1.0 / niri_size`.
+- `niri_sample(vec2 coords)`: sample the **unfiltered** scene elsewhere using the same
+  output-relative coordinates. Coordinates outside the screen clamp to the edge.
+
+For example, this darkens the edges of the screen:
+
+```glsl
+vec4 filter_color(vec4 color, vec2 coords) {
+    vec2 p = coords * 2.0 - 1.0;
+    float vignette = clamp(1.0 - 0.25 * dot(p, p), 0.0, 1.0);
+    return vec4(color.rgb * vignette, color.a);
+}
+```
+
+Filters are single-pass and static: there are no time, history, or additional texture inputs,
+and no continuous redraw for animation. The full output is repainted when underlying content
+changes, so shaders that sample neighboring pixels work with damage tracking.
+
+Invalid GLSL is logged and shows a config-error notification. A failed edit keeps the last
+successfully compiled filter; an invalid initial shader leaves the scene unfiltered (grayscale
+still works). Removing `screen-filter` clears the custom shader. `niri validate` checks KDL
+and shader-file readability; actual GLSL compilation requires the running compositor's GPU.
+
+Custom filters require framebuffer blitting and force GPU compositing, disabling direct
+scanout, overlay/underlay planes, and hardware cursor planes while enabled. Arbitrary user
+shaders are not sandboxed: expensive or broken GPU code can cause slowdowns or driver issues.
+
 ### `screenshot-path`
 
 Set the path where screenshots are saved.

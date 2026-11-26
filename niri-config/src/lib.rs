@@ -40,6 +40,7 @@ pub mod layout;
 pub mod misc;
 pub mod output;
 pub mod recent_windows;
+pub mod screen_filter;
 pub mod utils;
 pub mod window_rule;
 pub mod workspace;
@@ -57,6 +58,7 @@ pub use crate::misc::*;
 pub use crate::output::{Output, OutputName, Outputs, Position, Vrr};
 use crate::recent_windows::RecentWindowsPart;
 pub use crate::recent_windows::{MruDirection, MruFilter, MruPreviews, MruScope, RecentWindows};
+pub use crate::screen_filter::ScreenFilter;
 pub use crate::utils::FloatOrInt;
 use crate::utils::{expand_home_path, Flag, MergeWith as _};
 pub use crate::window_rule::{
@@ -75,6 +77,7 @@ pub struct Config {
     pub layout: Layout,
     pub prefer_no_csd: bool,
     pub grayscale: bool,
+    pub screen_filter: ScreenFilter,
     pub cursor: Cursor,
     pub screenshot_path: ScreenshotPath,
     pub clipboard: Clipboard,
@@ -244,6 +247,9 @@ where
                     config.borrow_mut().prefer_no_csd = Flag::decode_node(node, ctx)?.0
                 }
                 "grayscale" => config.borrow_mut().grayscale = Flag::decode_node(node, ctx)?.0,
+                "screen-filter" => {
+                    config.borrow_mut().screen_filter = ScreenFilter::decode_node(node, ctx)?;
+                }
 
                 "screenshot-path" => {
                     let part = knuffel::Decode::decode_node(node, ctx)?;
@@ -2024,6 +2030,10 @@ mod tests {
             },
             prefer_no_csd: true,
             grayscale: false,
+            screen_filter: ScreenFilter {
+                off: false,
+                custom_shader: None,
+            },
             cursor: Cursor {
                 xcursor_theme: "breeze_cursors",
                 xcursor_size: 16,

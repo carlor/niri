@@ -13,6 +13,7 @@ mod grayscale;
 mod layer_shell;
 mod minimization;
 mod remove_output;
+mod screen_filter;
 mod transactions;
 mod virtual_pointer;
 mod window_opening;

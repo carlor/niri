@@ -6,7 +6,7 @@ use niri_config::CornerRadius;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::{Element, Id, RenderElement};
 use smithay::backend::renderer::gles::{
-    ffi, Capability, GlesError, GlesFrame, GlesRenderer, GlesTexture, Uniform,
+    ffi, Capability, GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform,
 };
 use smithay::backend::renderer::utils::CommitCounter;
 use smithay::backend::renderer::{Frame as _, FrameContext, Offscreen, Texture as _};
@@ -39,6 +39,7 @@ pub struct FramebufferEffectElement {
     blur_options: Option<BlurOptions>,
     noise: f32,
     saturation: f32,
+    screen_shader: Option<GlesTexProgram>,
 }
 
 #[derive(Debug)]
@@ -90,16 +91,18 @@ impl FramebufferEffect {
             blur_options,
             noise,
             saturation,
+            screen_shader: None,
         }
     }
 }
 
 impl FramebufferEffectElement {
-    fn compute_uniforms(
-        &self,
-        crop: Rectangle<f64, Logical>,
-        transform: Transform,
-    ) -> [Uniform<'static>; 7] {
+    pub fn with_screen_shader(mut self, program: GlesTexProgram) -> Self {
+        self.screen_shader = Some(program);
+        self
+    }
+
+    fn input_to_clip_geo(&self, crop: Rectangle<f64, Logical>, transform: Transform) -> Mat3 {
         let offset = crop.loc - (self.clip_geo.loc - self.geometry.loc);
         let offset = Vec2::new(offset.x as f32, offset.y as f32);
         let crop_size = Vec2::new(crop.size.w as f32, crop.size.h as f32);
@@ -109,11 +112,20 @@ impl FramebufferEffectElement {
         let input_to_clip_geo =
             Mat3::from_scale(crop_size / clip_size) * Mat3::from_translation(offset / crop_size);
 
-        // Revert the effect of the texture transform.
+        // Revert the actual texture matrix used below, including mirrored quarter-turns.
+        // Transform::invert() is not the matrix inverse for those mirrored transforms.
         let transform_mat = Mat3::from_translation(Vec2::new(0.5, 0.5))
-            * transform.matrix()
+            * transform.invert().matrix().inverse()
             * Mat3::from_translation(Vec2::new(-0.5, -0.5));
-        let input_to_clip_geo = input_to_clip_geo * transform_mat;
+        input_to_clip_geo * transform_mat
+    }
+
+    fn compute_uniforms(
+        &self,
+        crop: Rectangle<f64, Logical>,
+        transform: Transform,
+    ) -> [Uniform<'static>; 7] {
+        let input_to_clip_geo = self.input_to_clip_geo(crop, transform);
 
         let clip_geo_size = (self.clip_geo.size.w as f32, self.clip_geo.size.h as f32);
 
@@ -180,7 +192,7 @@ impl RenderElement<GlesRenderer> for FramebufferEffectElement {
             if !supports_blit {
                 static WARN: Once = Once::new();
                 WARN.call_once(|| {
-                    warn!("non-xray background effects disabled: renderer does not support framebuffer blitting");
+                    warn!("framebuffer effects disabled: renderer does not support framebuffer blitting");
                 });
                 return Ok(());
             }
@@ -398,11 +410,37 @@ impl RenderElement<GlesRenderer> for FramebufferEffectElement {
             clamped_dst.size.to_f64().upscale(dst_to_src).to_logical(1.),
         );
 
-        let program = Shaders::get_from_frame(frame).postprocess_and_clip.clone();
-        let uniforms = program
-            .is_some()
-            .then(|| self.compute_uniforms(crop, frame.transformation()));
-        let uniforms = uniforms.as_ref().map_or(&[][..], |x| &x[..]);
+        let program = self
+            .screen_shader
+            .clone()
+            .or_else(|| Shaders::get_from_frame(frame).postprocess_and_clip.clone());
+        let custom_uniforms;
+        let standard_uniforms;
+        let uniforms: &[Uniform<'_>];
+        if self.screen_shader.is_some() {
+            let input_to_geo = self.input_to_clip_geo(crop, frame.transformation());
+            custom_uniforms = [
+                Uniform::new(
+                    "niri_size",
+                    (
+                        self.clip_geo.size.w as f32 * self.scale,
+                        self.clip_geo.size.h as f32 * self.scale,
+                    ),
+                ),
+                mat3_uniform("niri_input_to_geo", input_to_geo),
+                mat3_uniform("niri_geo_to_tex", input_to_geo.inverse()),
+                Uniform::new(
+                    "niri_grayscale",
+                    if self.saturation == 0. { 1f32 } else { 0. },
+                ),
+            ];
+            uniforms = &custom_uniforms;
+        } else if program.is_some() {
+            standard_uniforms = self.compute_uniforms(crop, frame.transformation());
+            uniforms = &standard_uniforms;
+        } else {
+            uniforms = &[];
+        }
 
         frame.render_texture_from_to(
             texture,

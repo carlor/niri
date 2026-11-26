@@ -21,6 +21,7 @@ pub struct Shaders {
     pub custom_resize: RefCell<Option<ShaderProgram>>,
     pub custom_close: RefCell<Option<ShaderProgram>>,
     pub custom_open: RefCell<Option<ShaderProgram>>,
+    pub custom_screen_filter: RefCell<Option<GlesTexProgram>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -159,6 +160,7 @@ impl Shaders {
             custom_resize: RefCell::new(None),
             custom_close: RefCell::new(None),
             custom_open: RefCell::new(None),
+            custom_screen_filter: RefCell::new(None),
         }
     }
 
@@ -351,6 +353,33 @@ pub fn set_custom_open_program(renderer: &mut GlesRenderer, src: Option<&str>) {
             warn!("error destroying previous custom open shader: {err:?}");
         }
     }
+}
+
+/// Compile before replacing, so an invalid edit leaves the last working filter intact.
+pub fn set_custom_screen_filter(
+    renderer: &mut GlesRenderer,
+    src: Option<&str>,
+) -> Result<(), GlesError> {
+    let program = src
+        .map(|src| {
+            let source = format!(
+                "{}\n#line 1\n{src}\n{}",
+                include_str!("screen_filter_prelude.frag"),
+                include_str!("screen_filter_epilogue.frag"),
+            );
+            renderer.compile_custom_texture_shader(
+                source,
+                &[
+                    UniformName::new("niri_size", UniformType::_2f),
+                    UniformName::new("niri_input_to_geo", UniformType::Matrix3x3),
+                    UniformName::new("niri_geo_to_tex", UniformType::Matrix3x3),
+                    UniformName::new("niri_grayscale", UniformType::_1f),
+                ],
+            )
+        })
+        .transpose()?;
+    Shaders::get(renderer).custom_screen_filter.replace(program);
+    Ok(())
 }
 
 pub fn mat3_uniform(name: &str, mat: Mat3) -> Uniform<'_> {

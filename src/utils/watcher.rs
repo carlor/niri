@@ -596,6 +596,26 @@ mod tests {
     }
 
     #[test]
+    fn screen_filter_shader_changes_are_watched() -> Result {
+        const CONFIG: &str = r#"screen-filter { custom-shader path="filter.frag"; }"#;
+        TestPath::Explicit("niri/config.kdl")
+            .setup(|sh| {
+                sh.write_file("niri/config.kdl", CONFIG)?;
+                sh.write_file("niri/filter.frag", "initial shader")
+            })
+            .assert_initial(CONFIG)
+            .run(|sh, test| {
+                sh.write_file("niri/filter.frag", "updated shader")?;
+                test.assert_changed_to(CONFIG);
+                sh.remove_path("niri/filter.frag")?;
+                test.assert_changed_to(CONFIG);
+                sh.write_file("niri/filter.frag", "recreated shader")?;
+                test.assert_changed_to(CONFIG);
+                Ok(())
+            })
+    }
+
+    #[test]
     fn remove_included_file() -> Result {
         TestPath::Explicit("niri/config.kdl")
             .setup(|sh| {

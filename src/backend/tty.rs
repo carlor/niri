@@ -873,6 +873,13 @@ impl Tty {
             if let Some(src) = config.animations.window_open.custom_shader.as_deref() {
                 shaders::set_custom_open_program(gles_renderer, Some(src));
             }
+            if let Err(err) = shaders::set_custom_screen_filter(
+                gles_renderer,
+                config.screen_filter.shader_source(),
+            ) {
+                warn!("error compiling custom screen filter: {err:?}");
+                niri.config_error_notification.show();
+            }
             drop(config);
 
             niri.update_shaders();
@@ -1989,7 +1996,7 @@ impl Tty {
             }
             // All content, including cursors and any overlay/underlay planes, must pass
             // through the final display filter rather than bypassing GPU compositing.
-            if config.grayscale {
+            if config.grayscale || config.screen_filter.is_enabled() {
                 flags.remove(
                     FrameFlags::ALLOW_SCANOUT | FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY,
                 );

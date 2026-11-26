@@ -1072,6 +1072,8 @@ pub enum Action {
     ToggleDebugTint {},
     /// Toggle grayscale on all displays without affecting screen captures.
     ToggleGrayscale {},
+    /// Toggle the configured custom screen filter without affecting screen captures.
+    ToggleScreenFilter {},
     /// Toggle visualization of render element opaque regions.
     DebugToggleOpaqueRegions {},
     /// Toggle visualization of output damage.
